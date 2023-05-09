@@ -77,9 +77,11 @@ def main() :
     file_store_loc = path+strftime("%Y-%m-%d_%H:%M:%S")
     os.mkdir(file_store_loc)
 
-    for num, name in Config.Channel_Number_Name_Dictionary.keys():
-        if name != "-" : 
+    for num in Config.Channel_Number_Name_Dictionary.keys():
+        name = Config.Channel_Number_Name_Dictionary[num]
+        if name != "-": 
             channel_number_file_dict[num] = open(f"{file_store_loc}_{name}", mode="x+")
+
 
     # Trigger pin
     GPIO.output(5, GPIO.HIGH) # Start recording
