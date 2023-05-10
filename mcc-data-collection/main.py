@@ -86,6 +86,7 @@ def main() :
     # Trigger pin
     GPIO.output(5, GPIO.HIGH) # Start recording
 
+    time_elapsed = 0
 
     # Sampling Loop
     while GPIO.input(SWITCH_PIN):  
@@ -95,8 +96,9 @@ def main() :
             second_channel_number = ic*2 +2
             data = i.a_in_scan_read_numpy(-1,0)[5]
 
-            if(Config.Channel_Number_Name_Dictionary[first_channel_number] != "-"): write_to_file(channel_number_file_dict[num], data[0::2])
-            if(Config.Channel_Number_Name_Dictionary[second_channel_number] != "-"): write_to_file(channel_number_file_dict[num], data[1::2])
+            if(Config.Channel_Number_Name_Dictionary.get(first_channel_number, "-") != "-"): write_to_file(channel_number_file_dict[first_channel_number], data[0::2])
+            if(Config.Channel_Number_Name_Dictionary.get(second_channel_number, "-") != "-"): write_to_file(channel_number_file_dict[second_channel_number], data[1::2])
+
 
 
         time_elapsed += SLEEP_TIME
