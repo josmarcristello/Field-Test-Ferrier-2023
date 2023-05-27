@@ -1,209 +1,194 @@
 from __future__ import print_function
-from sys import stdout, version_info
-import csv
 import os
+from sys import stdout, version_info
+from math import sqrt
+from time import sleep, time
+from daqhats import (hat_list, mcc172, OptionFlags, HatIDs, TriggerModes,
+                     HatError, SourceType)
+from daqhats_utils import (enum_mask_to_string, chan_list_to_mask,
+                           validate_channels)
+import pandas as pd
 from datetime import datetime
-from time import sleep
-from daqhats import mcc172, OptionFlags, SourceType, HatIDs, HatError
-from daqhats_utils import select_hat_device, enum_mask_to_string, \
-    chan_list_to_mask
+import numpy as np
+import psutil
+import shutil
 
-READ_ALL_AVAILABLE = -1
-IEPE_ENABLE = 1
+# Settings
+hat_address = 1 # Select HAT to record
+scan_rate = 10240.0  # Samples per second. has to be multiples of 2
 
+# Constants
+#DEVICE_COUNT = 2 # Deprecated: Calculating with number_of_hats
+CURSOR_SAVE = "\x1b[s"
+CURSOR_RESTORE = "\x1b[u"
 CURSOR_BACK_2 = '\x1b[2D'
 ERASE_TO_END_OF_LINE = '\x1b[0K'
+READ_ALL_AVAILABLE = -1
+VERBOSE = 1
 
-def main(): # pylint: disable=too-many-locals, too-many-statements
-    """
-    This function is executed automatically when the module is run directly.
-    """
+# Number of hats detected and types of hats
+filter_by_id = HatIDs.MCC_172
+hats = hat_list(filter_by_id=filter_by_id)
+number_of_hats = len(hats)
 
-    # Store the channels in a list and convert the list to a channel mask that
-    # can be passed as a parameter to the MCC 172 functions.
-    channels = [0, 1]
-    channel_mask = chan_list_to_mask(channels)
-    num_channels = len(channels)
+print("INFO: there are " + str(number_of_hats) + " hats.")
 
-    samples_per_channel = 0
+chans = [
+    {0, 1},
+    {0, 1}]
 
-    options = OptionFlags.CONTINUOUS
 
-    scan_rate = 10240.0
+###############
+## Functions ##
+###############
 
-    try:
-        # Select an MCC 172 HAT device to use.
-        address = select_hat_device(HatIDs.MCC_172)
-        hat = mcc172(address)
+def write_to_csv_file(array_list, filename, sample_rate=10240, elapsed_time=0):
+    # Check for array length consistency
+    if not all(len(arr) == len(array_list[0]) for arr in array_list):
+        print("Array lengths are not consistent, skipping this batch.")
+        return
 
-        print('\nSelected MCC 172 HAT device at address', address)
+    # Create DataFrame
+    times = np.linspace(elapsed_time, elapsed_time + len(array_list[0])/sample_rate, len(array_list[0]))
+    df = pd.DataFrame(times, columns=["time"])
+    for i, array in enumerate(array_list):
+        df["value_" + str(i+1)] = array
 
-        # Turn on IEPE supply?
-        iepe_enable = IEPE_ENABLE
+    new_filename = filename
 
-        for channel in channels:
-            hat.iepe_config_write(channel, iepe_enable)
+    # If file exists, append. If not, write a new file.
+    df.to_csv(new_filename, mode='a', header=not os.path.exists(new_filename), index=False)
 
-        # Configure the clock and wait for sync to complete.
-        hat.a_in_clock_config_write(SourceType.LOCAL, scan_rate)
+###############
 
-        synced = False
-        while not synced:
-            (_source_type, actual_scan_rate, synced) = hat.a_in_clock_config_read()
-            if not synced:
-                sleep(0.005)
-
-        print('\nMCC 172 continuous scan example')
-        print('    IEPE power: ', end='')
-        if iepe_enable == 1:
-            print('on')
-        else:
-            print('off')
-        print('    Channels: ', end='')
-        print(', '.join([str(chan) for chan in channels]))
-        print('    Requested scan rate: ', scan_rate)
-        print('    Actual scan rate: ', actual_scan_rate)
-        print('    Options: ', enum_mask_to_string(OptionFlags, options))
-
-        # Configure and start the scan.
-        # Since the continuous option is being used, the samples_per_channel
-        # parameter is ignored if the value is less than the default internal
-        # buffer size (10000 * num_channels in this case). If a larger internal
-        # buffer size is desired, set the value of this parameter accordingly.
-        hat.a_in_scan_start(channel_mask, samples_per_channel, options)
-
-        print('Starting scan ... Press Ctrl-C to stop\n')
-
-        # Display the header row for the data table.
-        print('Samples Read    Scan Count', end='')
-        for chan, item in enumerate(channels):
-            print('       Channel ', item, sep='', end='')
-        print('')
-
-        ## Define saved filename
-        # Local Folder
-        filename = 'data.csv'
-        # Boot Partition
-        #filename = '/boot/data/data.csv'
-        if os.path.exists(filename):
-            count = 1
-            base_filename, ext = os.path.splitext(filename)
-            while os.path.exists(f"{base_filename}_{count}{ext}"):
-                count += 1
-            filename = f"{base_filename}_{count}{ext}"
-
-        try:
-            read_and_display_data(hat, num_channels, filename)
-
-        except KeyboardInterrupt:
-            # Clear the '^C' from the display.
-            print(CURSOR_BACK_2, ERASE_TO_END_OF_LINE, '\n')
-            print('Stopping')
-
-            hat.a_in_scan_stop()
-            hat.a_in_scan_cleanup()
-
-            # Turn off IEPE supply
-            for channel in channels:
-                hat.iepe_config_write(channel, 0)
-
-    except (HatError, ValueError) as err:
-        print('\n', err)
-        
-
-def return_value(data, channel, num_channels, num_samples_per_channel):
-    value = 0.0
-    index = channel
-    for _i in range(num_samples_per_channel):
-        value += (data[index] * data[index]) / num_samples_per_channel
-        index += num_channels
-
-    return value
-
-# Updated write_to_csv function with header row
-def write_to_csv(filename, data, num_channels, num_samples_per_channel):
-    # Check if the file exists; if not, write the header row
-    file_exists = os.path.exists(filename)
-    with open(filename, mode='a', newline='') as csv_file:
-        csv_writer = csv.writer(csv_file)
-
-        # Write the header row if the file didn't exist before
-        if not file_exists:
-            header_row = ['time']
-            for channel in range(num_channels):
-                header_row.append(f'Channel {channel}')
-            csv_writer.writerow(header_row)
-
-        # Write the data rows with timestamp
-        index = 0
-        for _ in range(num_samples_per_channel):
-            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-            row = [timestamp]
-            for _ in range(num_channels):
-                row.append(data[index])
-                index += 1
-            csv_writer.writerow(row)
-
-def read_and_display_data(hat, num_channels, filename):
-    """
-    Reads data from the specified channels on the specified DAQ HAT devices
-    and updates the data on the terminal display.  The reads are executed in a
-    loop that continues until the user stops the scan or an overrun error is
-    detected.
-
-    Args:
-        hat (mcc172): The mcc172 HAT device object.
-        num_channels (int): The number of channels to display.
-
-    Returns:
-        None
-
-    """
-    total_samples_read = 0
-    read_request_size = READ_ALL_AVAILABLE
-
-    # When doing a continuous scan, the timeout value will be ignored in the
-    # call to a_in_scan_read because we will be requesting that all available
-    # samples (up to the default buffer size) be returned.
-    timeout = 5.0
-
-    # Read all of the available samples (up to the size of the read_buffer which
-    # is specified by the user_buffer_size).  Since the read_request_size is set
-    # to -1 (READ_ALL_AVAILABLE), this function returns immediately with
-    # whatever samples are available (up to user_buffer_size) and the timeout
-    # parameter is ignored.
-    while True:
-        read_result = hat.a_in_scan_read(read_request_size, timeout)
-
-        # Check for an overrun error
-        if read_result.hardware_overrun:
-            print('\n\nHardware overrun\n')
-            break
-        elif read_result.buffer_overrun:
-            print('\n\nBuffer overrun\n')
-            break
-
-        samples_read_per_channel = int(len(read_result.data) / num_channels)
-        total_samples_read += samples_read_per_channel
-
-        write_to_csv(filename, read_result.data, num_channels, samples_read_per_channel)
-
-        print('\r{:12}'.format(samples_read_per_channel),
-              ' {:12} '.format(total_samples_read), end='')
-
-        # Display the RMS voltage for each channel.
-        if samples_read_per_channel > 0:
-            for i in range(num_channels):
-                value = return_value(read_result.data, i, num_channels,
-                                 samples_read_per_channel)
-                print('{:10.5f}'.format(value), 'V ',
-                      end=''
-                      )
-            stdout.flush()
-
-            sleep(0.1)
-
-    print('\n')
+def clean_and_config_HATs():
+    ##########################
+    ## Configuring the hats ##
+    # Configures every connected hat to :
+    # 1 - Activate IEPE
+    # 2 - Sets clock source as local
+    # 3 - Sets Trigger source as local
+    print("\nClearing scan, re-configuring HATs.")
+    MASTER = 0
+    scan_rate = 10240.0  # Samples per second. has to be multiples of 2
     
-if __name__ == '__main__':
-    main()
+    filter_by_id = HatIDs.MCC_172
+    hats = hat_list(filter_by_id=filter_by_id)
+    number_of_hats = len(hats)
+
+    ## Clearing out any previous scans ##
+    for i in range(number_of_hats):
+        mcc172(i).a_in_scan_stop()
+        mcc172(i).a_in_scan_cleanup()
+
+    for i in range(number_of_hats):
+        for channel in chans[i]:
+            iepe_enable = 1
+            mcc172(i).iepe_config_write(channel, iepe_enable)
+            # Configure the clocks.
+            mcc172(i).a_in_clock_config_write(SourceType.LOCAL, scan_rate)
+            # Configure the trigger.
+            mcc172(i).trigger_config(SourceType.LOCAL, TriggerModes.ACTIVE_HIGH)
+
+import os
+
+def get_cpu_temp():
+    temp_file = os.popen("vcgencmd measure_temp")
+    temp_string = temp_file.read()
+    temp_file.close()
+    return float(temp_string.split('=')[1].split("'")[0])
+
+#######################
+## Recording Section ##
+
+clean_and_config_HATs()
+
+hat_address_1 = 0 
+hat_address_2 = 1
+
+hat_1 = mcc172(hat_address_1)
+hat_2 = mcc172(hat_address_2)
+
+# Trying to manually record:
+channel_mask = chan_list_to_mask([0, 1])
+samples_per_channel = 51240*5
+#options = OptionFlags.DEFAULT
+options = OptionFlags.CONTINUOUS
+
+# Since the continuous option is being used, the samples_per_channel
+# parameter is ignored if the value is less than the default internal
+# buffer size (10000 * num_channels in this case). If a larger internal
+# buffer size is desired, set the value of this parameter accordingly.
+hat_1.a_in_scan_start(channel_mask, samples_per_channel, options)
+hat_2.a_in_scan_start(channel_mask, samples_per_channel, options)
+
+#read_and_display_data(hat, 2)
+
+## Settings
+read_request_size = READ_ALL_AVAILABLE
+timeout = 1
+num_channels = 2
+max_file_size = 4000 # MB, maximum it will record before splitting a new file
+
+filename_1 = "/home/pi/daqhats/Field-Test-Ferrier-2023/mcc-data-collection/data/"
+filename_1 = filename_1 + "Hat_1_" + datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
+filename_1 = filename_1 + ".csv"
+original_filename_1 = filename_1
+
+filename_2 = "/home/pi/daqhats/Field-Test-Ferrier-2023/mcc-data-collection/data/"
+filename_2 = filename_2 + "Hat_2_" + datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
+filename_2 = filename_2 + ".csv"
+original_filename_2 = filename_2
+
+total_samples_read = 0
+file_size_MB = 0
+file_count = 1
+accumulated_data = []
+
+start_time = time()
+
+while True:
+    read_result_1 = hat_1.a_in_scan_read_numpy(read_request_size, timeout)
+    read_result_2 = hat_2.a_in_scan_read_numpy(read_request_size, timeout)
+    
+    # Meta Data Calculation
+    start_loop_time = time()
+
+    samples_read_per_channel_1 = int(len(read_result_1.data) / num_channels)
+    samples_read_per_channel_2 = int(len(read_result_2.data) / num_channels)
+
+    if samples_read_per_channel_1 > 0:
+        write_to_csv_file([read_result_1.data[0::2], read_result_1.data[1::2]], filename_1, elapsed_time=time()-start_time)
+        stdout.flush()
+        
+    if samples_read_per_channel_2 > 0:
+        write_to_csv_file([read_result_2.data[0::2], read_result_2.data[1::2]], filename_2, elapsed_time=time()-start_time)
+        stdout.flush()
+    
+    if os.path.isfile(filename_1):
+        delta_file_size_MB = os.path.getsize(filename_1) / (1024 * 1024) - file_size_MB
+        file_size_MB = os.path.getsize(filename_1) / (1024 * 1024)
+        
+        if VERBOSE:
+            elapsed_time = time() - start_time
+            loop_time = time() - start_loop_time
+            memory_info = psutil.virtual_memory()
+            #total, used, free = shutil.disk_usage("/")
+
+            print(f'\rElapsed time: {elapsed_time:.2f} sec. Loop Time: {loop_time:.2f} sec. Current file size: {file_size_MB:.2f} MB (+ {delta_file_size_MB:.2f} MB). Memory used: {memory_info.percent} %. CPU temperature is: {get_cpu_temp()} C.', end='', flush=True)
+            #print(f'\rElapsed time: {elapsed_time:.2f} sec. Loop Time: {loop_time:.2f} sec. Current file size: {file_size_MB:.2f} MB (+ {delta_file_size_MB:.2f} MB). Memory used: {memory_info.percent} %. CPU temperature is: {get_cpu_temp()} C. Hard Disk Space: {used // (2**30)} / {total // (2**30)} GB ({free / total * 100:.2f}% free)', end='', flush=True)
+
+        if file_size_MB > max_file_size:
+            file_count += 1
+            
+            filename_1 = f"{original_filename_1.split('.')[0]}_{file_count}.csv"
+            filename_2 = f"{original_filename_2.split('.')[0]}_{file_count}.csv"
+            
+            clean_and_config_HATs()
+            hat_1.a_in_scan_start(channel_mask, samples_per_channel, options)
+            hat_2.a_in_scan_start(channel_mask, samples_per_channel, options)
+    
+    sleep(0.1)
+    
+
+    
