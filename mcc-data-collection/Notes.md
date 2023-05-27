@@ -59,5 +59,20 @@ sudo systemctl disable continuous_record_data.service
 
 Count number of daqhats
 ```
-daqhats_list_boards 
+daqhats_list_boards
 ```
+
+Update/read EEPROMS (must be root)
+```
+sudo daqhats_read_eeproms 
+```
+
+Update the firmware (MCC 172). "0" is the board address.
+
+```
+sudo mcc172_firmware_update 0 ~/daqhats/tools/MCC_172.fw
+```
+
+# Additional Notes: 
+
+Storage Space: 1 Hat, 2 channels, IEPE, 10 kHz: 38.2 MB/min (2.3 GB/min)
