@@ -45,8 +45,10 @@ def import_lvm_file(file_path, chunksize=100000):
     data = pd.concat(chunks, ignore_index=True)
     return data
 
+import matplotlib.pyplot as plt
+
 def plot_data(data_frame, column_names=["CH5"], start_time=None, end_time=None, transparency=1,
-              title=None, xlabel='Time [s]', ylabel='Value [V]'):
+              title=None, xlabel='Time [s]', ylabel='Value [V]', figsize=None):
     # If no column names provided, default to an empty list.
     if not column_names:
         column_names = []
@@ -64,6 +66,10 @@ def plot_data(data_frame, column_names=["CH5"], start_time=None, end_time=None, 
     # Filter data_frame based on the provided start and end times.
     mask = (data_frame['time'] >= start_time) & (data_frame['time'] <= end_time)
     filtered_data = data_frame.loc[mask, column_names]
+
+    # Create a wide plot if figsize is specified, else use default size.
+    if figsize is not None:
+        plt.figure(figsize=figsize)
 
     # Plot the columns with time_values as the x-axis
     for column in filtered_data.columns:
